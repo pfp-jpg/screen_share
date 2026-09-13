@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画面共有</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1117;
+    --panel:#141b24;
+    --line:#2a3542;
+    --text:#e7edf3;
+    --dim:#8b98a8;
+    --signal:#3ddc97;
+    --danger:#e0574c;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  .card{
+    width:100%;
+    max-width:640px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:32px 28px;
+  }
+  .role{
+    font-size:13px;
+    letter-spacing:.04em;
+    color:var(--signal);
+    margin:0 0 4px;
+  }
+  h1{
+    font-size:22px;
+    font-weight:600;
+    margin:0 0 24px;
+    line-height:1.4;
+  }
+  label{
+    display:block;
+    font-size:13px;
+    color:var(--dim);
+    margin-bottom:8px;
+  }
+  .code-input{
+    width:100%;
+    font-size:32px;
+    letter-spacing:.12em;
+    font-variant-numeric:tabular-nums;
+    background:var(--bg);
+    border:1px solid var(--line);
+    border-radius:4px;
+    color:var(--text);
+    padding:14px 16px;
+    text-align:center;
+    font-family:'Courier New', monospace;
+  }
+  .code-input:focus{outline:none;border-color:var(--signal);}
+  .row{margin-bottom:20px;}
+  .checkbox-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:24px;
+    color:var(--dim);
+    font-size:14px;
+  }
+  .checkbox-row input{width:16px;height:16px;accent-color:var(--signal);}
+  button{
+    width:100%;
+    padding:14px;
+    font-size:15px;
+    font-weight:600;
+    border:none;
+    border-radius:4px;
+    cursor:pointer;
+    font-family:inherit;
+  }
+  .primary{background:var(--signal);color:#08120d;}
+  .primary:disabled{background:var(--line);color:var(--dim);cursor:not-allowed;}
+  .danger-outline{background:transparent;border:1px solid var(--danger);color:var(--danger);display:none;margin-top:10px;}
+  .ghost{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--dim);
+    margin-top:12px;
+  }
+  .status{
+    margin-top:20px;
+    padding:12px 14px;
+    border-radius:4px;
+    font-size:13px;
+    background:var(--bg);
+    border:1px solid var(--line);
+    color:var(--dim);
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex-shrink:0;}
+  .status.waiting .dot{background:#e0b04c;animation:pulse 1.2s infinite;}
+  .status.connected .dot{background:var(--signal);}
+  .status.error .dot{background:var(--danger);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+  video{
+    width:100%;
+    border-radius:4px;
+    margin-top:16px;
+    background:#000;
+    display:none;
+  }
+  .hint{font-size:12px;color:var(--dim);margin-top:16px;line-height:1.6;}
+
+  /* 役割選択画面 */
+  .choices{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:14px;
+  }
+  .choice-btn{
+    background:var(--bg);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:24px 16px;
+    text-align:left;
+    cursor:pointer;
+    color:var(--text);
+    transition:border-color .15s;
+  }
+  .choice-btn:hover{border-color:var(--signal);}
+  .choice-btn .label{font-size:16px;font-weight:600;margin-bottom:6px;}
+  .choice-btn .desc{font-size:12px;color:var(--dim);line-height:1.5;}
+  @media (max-width:480px){
+    .choices{grid-template-columns:1fr;}
+  }
+
+  [data-view]{display:none;}
+  [data-view].active{display:block;}
+</style>
+</head>
+<body>
+<div class="card">
+
+  <!-- 役割選択 -->
+  <div data-view="select" class="active">
+    <p class="role">画面共有</p>
+    <h1>どちらとして使いますか？</h1>
+    <div class="choices">
+      <button class="choice-btn" id="pickSender">
+        <div class="label">送る側</div>
+        <div class="desc">自分の画面（と音声）を相手に送ります</div>
+      </button>
+      <button class="choice-btn" id="pickReceiver">
+        <div class="label">受け取る側</div>
+        <div class="desc">相手の画面（と音声）を受け取って見ます</div>
+      </button>
+    </div>
+  </div>
+
+  <!-- 送信側 -->
+  <div data-view="sender">
+    <p class="role">送る側</p>
+    <h1>相手に伝えた番号を入力して<br>画面共有を始めます</h1>
+
+    <div class="row">
+      <label for="senderCode">共有番号</label>
+      <input id="senderCode" class="code-input" type="text" inputmode="numeric" maxlength="6" placeholder="123456">
+    </div>
+
+    <div class="checkbox-row">
+      <input id="audioBox" type="checkbox" checked>
+      <label for="audioBox" style="margin:0;">音声も共有する（共有時に「音声を共有」を選択してください）</label>
+    </div>
+
+    <button id="senderStart" class="primary">共有を開始</button>
+    <button id="senderStop" class="danger-outline">共有を停止</button>
+
+    <div id="senderStatus" class="status">
+      <span class="dot"></span>
+      <span class="statusText">番号を入力して開始してください</span>
+    </div>
+
+    <video id="senderPreview" muted playsinline></video>
+
+    <p class="hint">受信側にも同じ番号を伝え、そちらで先に「受信を開始」してから、こちらで共有を開始すると確実です。</p>
+    <button class="ghost" id="senderBack">役割の選択に戻る</button>
+  </div>
+
+  <!-- 受信側 -->
+  <div data-view="receiver">
+    <p class="role">受け取る側</p>
+    <h1>相手と同じ番号を入力して<br>受信を開始します</h1>
+
+    <div class="row">
+      <label for="receiverCode">共有番号</label>
+      <input id="receiverCode" class="code-input" type="text" inputmode="numeric" maxlength="6" placeholder="123456">
+    </div>
+
+    <button id="receiverStart" class="primary">受信を開始</button>
+    <button id="receiverStop" class="danger-outline">受信を終了</button>
+
+    <div id="receiverStatus" class="status">
+      <span class="dot"></span>
+      <span class="statusText">番号を入力して開始してください</span>
+    </div>
+
+    <video id="remoteVideo" controls playsinline></video>
+
+    <p class="hint">この番号は他の利用者と衝突する可能性がある公開の中継サーバーを使っています。他人に推測されにくい、ある程度桁数のある番号にしてください。</p>
+    <button class="ghost" id="receiverBack">役割の選択に戻る</button>
+  </div>
+
+</div>
+
+<script>
+/* ---------- 画面切り替え ---------- */
+function showView(name){
+  document.querySelectorAll('[data-view]').forEach(el => el.classList.remove('active'));
+  document.querySelector('[data-view="' + name + '"]').classList.add('active');
+}
+
+document.getElementById('pickSender').addEventListener('click', () => showView('sender'));
+document.getElementById('pickReceiver').addEventListener('click', () => showView('receiver'));
+document.getElementById('senderBack').addEventListener('click', () => { stopShare(); showView('select'); });
+document.getElementById('receiverBack').addEventListener('click', () => { stopReceive(); showView('select'); });
+
+/* ================= 送信側ロジック（受信側とは完全に独立） ================= */
+(function(){
+  const codeInput = document.getElementById('senderCode');
+  const audioBox = document.getElementById('audioBox');
+  const startBtn = document.getElementById('senderStart');
+  const stopBtn = document.getElementById('senderStop');
+  const statusEl = document.getElementById('senderStatus');
+  const statusText = statusEl.querySelector('.statusText');
+  const preview = document.getElementById('senderPreview');
+
+  let peer = null;
+  let currentCall = null;
+  let localStream = null;
+  let retryTimer = null;
+
+  function setStatus(mode, text){
+    statusEl.className = 'status ' + mode;
+    statusText.textContent = text;
+  }
+
+  async function startShare(){
+    const code = codeInput.value.trim();
+    if(!code){ setStatus('error','番号を入力してください'); return; }
+
+    startBtn.disabled = true;
+    setStatus('waiting','画面選択中…');
+
+    try{
+      localStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: audioBox.checked
+      });
+    }catch(err){
+      setStatus('error','画面共有がキャンセルされました');
+      startBtn.disabled = false;
+      return;
+    }
+
+    preview.srcObject = localStream;
+    preview.style.display = 'block';
+    preview.play();
+
+    localStream.getVideoTracks()[0].addEventListener('ended', stopShare);
+
+    peer = new Peer();
+
+    peer.on('open', () => {
+      setStatus('waiting','受信側への接続を試みています…');
+      attemptCall(code);
+    });
+
+    peer.on('error', (err) => {
+      if(err.type === 'peer-unavailable'){ return; }
+      setStatus('error','接続エラー: ' + err.type);
+    });
+
+    stopBtn.style.display = 'block';
+    startBtn.style.display = 'none';
+  }
+
+  function attemptCall(code){
+    clearInterval(retryTimer);
+    retryTimer = setInterval(() => {
+      if(!localStream || currentCall) { clearInterval(retryTimer); return; }
+      const call = peer.call(code, localStream);
+      currentCall = call;
+      call.on('stream', () => {});
+      call.on('close', () => {
+        currentCall = null;
+        setStatus('waiting','接続が切れました。再接続しています…');
+        attemptCall(code);
+      });
+      call.on('error', () => { currentCall = null; });
+      setTimeout(() => {
+        if(call.peerConnection && call.peerConnection.connectionState === 'connected'){
+          clearInterval(retryTimer);
+          setStatus('connected','接続されました。共有中です');
+        }
+      }, 1500);
+    }, 2000);
+  }
+
+  function stopShare(){
+    clearInterval(retryTimer);
+    if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    if(currentCall){ currentCall.close(); currentCall = null; }
+    if(peer){ peer.destroy(); peer = null; }
+    preview.style.display = 'none';
+    startBtn.style.display = 'block';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
+    setStatus('','番号を入力して開始してください');
+  }
+
+  startBtn.addEventListener('click', startShare);
+  stopBtn.addEventListener('click', stopShare);
+
+  window.stopShare = stopShare; // 「戻る」ボタンから呼べるように
+})();
+
+/* ================= 受信側ロジック（送信側とは完全に独立） ================= */
+(function(){
+  const codeInput = document.getElementById('receiverCode');
+  const startBtn = document.getElementById('receiverStart');
+  const stopBtn = document.getElementById('receiverStop');
+  const statusEl = document.getElementById('receiverStatus');
+  const statusText = statusEl.querySelector('.statusText');
+  const remoteVideo = document.getElementById('remoteVideo');
+
+  let peer = null;
+
+  function setStatus(mode, text){
+    statusEl.className = 'status ' + mode;
+    statusText.textContent = text;
+  }
+
+  function startReceive(){
+    const code = codeInput.value.trim();
+    if(!code){ setStatus('error','番号を入力してください'); return; }
+
+    startBtn.disabled = true;
+    setStatus('waiting','待機中…（送信側の共有開始をお待ちください）');
+
+    peer = new Peer(code);
+
+    peer.on('open', () => {
+      setStatus('waiting','待機中…（送信側の共有開始をお待ちください）');
+    });
+
+    peer.on('call', (call) => {
+      call.answer();
+      call.on('stream', (remoteStream) => {
+        remoteVideo.srcObject = remoteStream;
+        remoteVideo.style.display = 'block';
+        remoteVideo.play();
+        setStatus('connected','接続されました。受信中です');
+      });
+      call.on('close', () => {
+        setStatus('waiting','送信側が停止しました。待機中…');
+        remoteVideo.style.display = 'none';
+      });
+    });
+
+    peer.on('error', (err) => {
+      if(err.type === 'unavailable-id'){
+        setStatus('error','その番号は現在使用中です。別の番号にしてください');
+      }else{
+        setStatus('error','接続エラー: ' + err.type);
+      }
+      startBtn.disabled = false;
+    });
+
+    stopBtn.style.display = 'block';
+    startBtn.style.display = 'none';
+  }
+
+  function stopReceive(){
+    if(peer){ peer.destroy(); peer = null; }
+    remoteVideo.style.display = 'none';
+    remoteVideo.srcObject = null;
+    startBtn.style.display = 'block';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
+    setStatus('','番号を入力して開始してください');
+  }
+
+  startBtn.addEventListener('click', startReceive);
+  stopBtn.addEventListener('click', stopReceive);
+
+  window.stopReceive = stopReceive;
+})();
+</script>
+</body>
+</html>
