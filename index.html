@@ -113,16 +113,27 @@
   .status.connected .dot{background:var(--signal);}
   .status.error .dot{background:var(--danger);}
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+  .video-wrap{position:relative;display:none;margin-top:16px;}
+  .video-wrap.show{display:block;}
   video{
     width:100%;
     border-radius:4px;
-    margin-top:16px;
     background:#000;
-    display:none;
+    display:block;
+  }
+  .unmute-btn{
+    position:absolute;
+    bottom:12px;
+    left:12px;
+    width:auto;
+    padding:8px 14px;
+    font-size:13px;
+    background:rgba(13,17,23,.85);
+    border:1px solid var(--signal);
+    color:var(--signal);
   }
   .hint{font-size:12px;color:var(--dim);margin-top:16px;line-height:1.6;}
 
-  /* 役割選択画面 */
   .choices{
     display:grid;
     grid-template-columns:1fr 1fr;
@@ -191,9 +202,11 @@
       <span class="statusText">番号を入力して開始してください</span>
     </div>
 
-    <video id="senderPreview" muted playsinline></video>
+    <div class="video-wrap" id="senderPreviewWrap">
+      <video id="senderPreview" muted playsinline autoplay></video>
+    </div>
 
-    <p class="hint">受信側にも同じ番号を伝え、そちらで先に「受信を開始」してから、こちらで共有を開始すると確実です。</p>
+    <p class="hint">受信側は先に「受信を開始」して待機してもOKです。この番号は最大1分ほど再接続を試み続けるので、タイミングがずれても自動でつながります。</p>
     <button class="ghost" id="senderBack">役割の選択に戻る</button>
   </div>
 
@@ -215,15 +228,28 @@
       <span class="statusText">番号を入力して開始してください</span>
     </div>
 
-    <video id="remoteVideo" controls playsinline></video>
+    <div class="video-wrap" id="remoteVideoWrap">
+      <video id="remoteVideo" controls playsinline autoplay muted></video>
+      <button class="unmute-btn" id="unmuteBtn">🔇 音声をオンにする</button>
+    </div>
 
-    <p class="hint">この番号は他の利用者と衝突する可能性がある公開の中継サーバーを使っています。他人に推測されにくい、ある程度桁数のある番号にしてください。</p>
+    <p class="hint">映像が表示されない場合は、動画の上で一度クリックしてみてください。ブラウザの自動再生制限が原因のことがあります。</p>
     <button class="ghost" id="receiverBack">役割の選択に戻る</button>
   </div>
 
 </div>
 
 <script>
+/* WebRTC の接続確立を助けるサーバー設定（STUN + 公開TURN） */
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+  ]
+};
+
 /* ---------- 画面切り替え ---------- */
 function showView(name){
   document.querySelectorAll('[data-view]').forEach(el => el.classList.remove('active'));
@@ -232,8 +258,8 @@ function showView(name){
 
 document.getElementById('pickSender').addEventListener('click', () => showView('sender'));
 document.getElementById('pickReceiver').addEventListener('click', () => showView('receiver'));
-document.getElementById('senderBack').addEventListener('click', () => { stopShare(); showView('select'); });
-document.getElementById('receiverBack').addEventListener('click', () => { stopReceive(); showView('select'); });
+document.getElementById('senderBack').addEventListener('click', () => { window.stopShare(); showView('select'); });
+document.getElementById('receiverBack').addEventListener('click', () => { window.stopReceive(); showView('select'); });
 
 /* ================= 送信側ロジック（受信側とは完全に独立） ================= */
 (function(){
@@ -244,11 +270,13 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
   const statusEl = document.getElementById('senderStatus');
   const statusText = statusEl.querySelector('.statusText');
   const preview = document.getElementById('senderPreview');
+  const previewWrap = document.getElementById('senderPreviewWrap');
 
   let peer = null;
   let currentCall = null;
   let localStream = null;
   let retryTimer = null;
+  let connected = false;
 
   function setStatus(mode, text){
     statusEl.className = 'status ' + mode;
@@ -274,20 +302,25 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
     }
 
     preview.srcObject = localStream;
-    preview.style.display = 'block';
-    preview.play();
+    previewWrap.classList.add('show');
+    preview.play().catch(() => {});
 
     localStream.getVideoTracks()[0].addEventListener('ended', stopShare);
 
-    peer = new Peer();
+    connected = false;
+    peer = new Peer(undefined, { config: ICE_CONFIG });
 
     peer.on('open', () => {
       setStatus('waiting','受信側への接続を試みています…');
-      attemptCall(code);
+      startRetryLoop(code);
     });
 
     peer.on('error', (err) => {
-      if(err.type === 'peer-unavailable'){ return; }
+      if(err.type === 'peer-unavailable'){
+        // 受信側がまだ待機していない。currentCallをクリアして次のリトライに任せる
+        currentCall = null;
+        return;
+      }
       setStatus('error','接続エラー: ' + err.type);
     });
 
@@ -295,34 +328,49 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
     startBtn.style.display = 'none';
   }
 
-  function attemptCall(code){
+  function startRetryLoop(code){
     clearInterval(retryTimer);
-    retryTimer = setInterval(() => {
-      if(!localStream || currentCall) { clearInterval(retryTimer); return; }
+
+    function tryOnce(){
+      if(!localStream || connected){ clearInterval(retryTimer); return; }
+
       const call = peer.call(code, localStream);
       currentCall = call;
-      call.on('stream', () => {});
-      call.on('close', () => {
-        currentCall = null;
-        setStatus('waiting','接続が切れました。再接続しています…');
-        attemptCall(code);
-      });
+
       call.on('error', () => { currentCall = null; });
-      setTimeout(() => {
-        if(call.peerConnection && call.peerConnection.connectionState === 'connected'){
-          clearInterval(retryTimer);
-          setStatus('connected','接続されました。共有中です');
+
+      call.on('close', () => {
+        if(connected){
+          connected = false;
+          currentCall = null;
+          setStatus('waiting','接続が切れました。再接続しています…');
+          startRetryLoop(code);
         }
-      }, 1500);
-    }, 2000);
+      });
+
+      // peerConnection の状態変化を直接監視して「接続成立」を検知する
+      if(call.peerConnection){
+        call.peerConnection.addEventListener('connectionstatechange', () => {
+          if(call.peerConnection.connectionState === 'connected'){
+            connected = true;
+            clearInterval(retryTimer);
+            setStatus('connected','接続されました。共有中です');
+          }
+        });
+      }
+    }
+
+    tryOnce();                      // すぐに1回試す
+    retryTimer = setInterval(tryOnce, 1500); // 以後1.5秒ごとにリトライ
   }
 
   function stopShare(){
     clearInterval(retryTimer);
+    connected = false;
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(currentCall){ currentCall.close(); currentCall = null; }
     if(peer){ peer.destroy(); peer = null; }
-    preview.style.display = 'none';
+    previewWrap.classList.remove('show');
     startBtn.style.display = 'block';
     startBtn.disabled = false;
     stopBtn.style.display = 'none';
@@ -332,7 +380,7 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
   startBtn.addEventListener('click', startShare);
   stopBtn.addEventListener('click', stopShare);
 
-  window.stopShare = stopShare; // 「戻る」ボタンから呼べるように
+  window.stopShare = stopShare;
 })();
 
 /* ================= 受信側ロジック（送信側とは完全に独立） ================= */
@@ -343,6 +391,8 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
   const statusEl = document.getElementById('receiverStatus');
   const statusText = statusEl.querySelector('.statusText');
   const remoteVideo = document.getElementById('remoteVideo');
+  const remoteVideoWrap = document.getElementById('remoteVideoWrap');
+  const unmuteBtn = document.getElementById('unmuteBtn');
 
   let peer = null;
 
@@ -358,23 +408,29 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
     startBtn.disabled = true;
     setStatus('waiting','待機中…（送信側の共有開始をお待ちください）');
 
-    peer = new Peer(code);
+    peer = new Peer(code, { config: ICE_CONFIG });
 
     peer.on('open', () => {
       setStatus('waiting','待機中…（送信側の共有開始をお待ちください）');
     });
 
     peer.on('call', (call) => {
-      call.answer();
+      call.answer(); // 受信側からは映像を送らない
       call.on('stream', (remoteStream) => {
         remoteVideo.srcObject = remoteStream;
-        remoteVideo.style.display = 'block';
-        remoteVideo.play();
-        setStatus('connected','接続されました。受信中です');
+        remoteVideoWrap.classList.add('show');
+        // 自動再生ポリシー対策: まずミュートで再生し、ユーザー操作でオンにしてもらう
+        remoteVideo.muted = true;
+        remoteVideo.play().catch(() => {
+          // それでも再生できない場合は、動画クリックで再生させる
+          remoteVideo.addEventListener('click', () => remoteVideo.play(), { once: true });
+        });
+        unmuteBtn.style.display = 'block';
+        setStatus('connected','接続されました。受信中です（現在ミュート）');
       });
       call.on('close', () => {
         setStatus('waiting','送信側が停止しました。待機中…');
-        remoteVideo.style.display = 'none';
+        remoteVideoWrap.classList.remove('show');
       });
     });
 
@@ -391,10 +447,18 @@ document.getElementById('receiverBack').addEventListener('click', () => { stopRe
     startBtn.style.display = 'none';
   }
 
+  unmuteBtn.addEventListener('click', () => {
+    remoteVideo.muted = false;
+    remoteVideo.play().catch(() => {});
+    unmuteBtn.textContent = '🔊 音声オン';
+    setStatus('connected','接続されました。受信中です');
+  });
+
   function stopReceive(){
     if(peer){ peer.destroy(); peer = null; }
-    remoteVideo.style.display = 'none';
+    remoteVideoWrap.classList.remove('show');
     remoteVideo.srcObject = null;
+    unmuteBtn.textContent = '🔇 音声をオンにする';
     startBtn.style.display = 'block';
     startBtn.disabled = false;
     stopBtn.style.display = 'none';
